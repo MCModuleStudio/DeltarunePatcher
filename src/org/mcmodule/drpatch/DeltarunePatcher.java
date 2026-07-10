@@ -33,7 +33,7 @@ import net.dongliu.jvcdiff.vcdiff.io.FileSeekableStream;
 public class DeltarunePatcher {
 	
 	private final File gameDir, backDir;
-	private String backSuffix;
+	private final String backSuffix;
 
 	public DeltarunePatcher(File gameDir) {
 		this(gameDir, new File(gameDir, "backup"));
@@ -50,12 +50,12 @@ public class DeltarunePatcher {
 	}
 
 	public boolean patch(PatchSource source, EnumPatchType type, EnumOS os) throws IOException, PatchException {
-		File workDir = getWorkDir(type, os);
+		File gameDir = getGameDir(type, os);
 		File backDir = getBackDir(type, os);
-		if (!workDir.exists())
+		if (!gameDir.exists())
 			return false;
-		File wadFile = new File(workDir, os.getWadFile());
-		File outFile = new File(workDir, os.getWadFile() + ".patch");
+		File wadFile = new File(gameDir, os.getWadFile());
+		File outFile = new File(gameDir, os.getWadFile() + ".patch");
 		File bakFile = new File(backDir, os.getWadFile() + this.backSuffix);
 		String sha256 = null;
 		boolean patched = false;
@@ -87,7 +87,7 @@ public class DeltarunePatcher {
 		AtomicBoolean isPatched = new AtomicBoolean(patched);
 		source.extractPatchFolder(type, os, sha256, (name, stream) -> {
 			try (InputStream in = stream) {
-				File outputFile = new File(workDir, name);
+				File outputFile = new File(gameDir, name);
 				File backupFile = new File(backDir, name + ".bak");
 				File parent = outputFile.getParentFile();
 				if (parent != null)
@@ -110,12 +110,12 @@ public class DeltarunePatcher {
 	}
 
 	public boolean restore(EnumPatchType type, EnumOS os) throws IOException {
-		File workDir = getWorkDir(type, os);
+		File gameDir = getGameDir(type, os);
 		File backDir = getBackDir(type, os);
 		if (!backDir.exists())
 			return false;
 		AtomicInteger restored = new AtomicInteger();
-		File wadFile = new File(workDir, os.getWadFile());
+		File wadFile = new File(gameDir, os.getWadFile());
 		File bakFile = new File(backDir, os.getWadFile() + this.backSuffix);
 		if (bakFile.exists()) {
 			File parent = wadFile.getParentFile();
@@ -139,7 +139,7 @@ public class DeltarunePatcher {
 					java.nio.file.Path relative = backDir.toPath().relativize(path);
 					String relativeName = relative.toString();
 					relativeName = relativeName.substring(0, relativeName.length() - 4);
-					File outputFile = new File(workDir, relativeName);
+					File outputFile = new File(gameDir, relativeName);
 					File parent = outputFile.getParentFile();
 					if (parent != null)
 						parent.mkdirs();
@@ -157,12 +157,24 @@ public class DeltarunePatcher {
 		return restored.get() > 0;
 	}
 
-	private File getWorkDir(EnumPatchType type, EnumOS os) {
+	private File getGameDir(EnumPatchType type, EnumOS os) {
 		return new File(this.gameDir, type == EnumPatchType.CHAPTER_SELECT ? type.getPatchFolder() : (type.getPatchFolder() + "_" + os.getSuffix()));
 	}
 
 	private File getBackDir(EnumPatchType type, EnumOS os) {
 		return new File(this.backDir, type == EnumPatchType.CHAPTER_SELECT ? type.getPatchFolder() : (type.getPatchFolder() + "_" + os.getSuffix()));
+	}
+
+	public File getGameDir() {
+		return this.gameDir;
+	}
+
+	public File getBackDir() {
+		return this.backDir;
+	}
+
+	public String getBackSuffix() {
+		return this.backSuffix;
 	}
 
 	private String sha256(ByteBuffer buffer) {

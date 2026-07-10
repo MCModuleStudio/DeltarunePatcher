@@ -21,8 +21,10 @@ import javax.swing.UIManager;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import org.mcmodule.drpatch.DeltarunePatcher;
 import org.mcmodule.drpatch.patchsrc.PatchSource;
+import org.mcmodule.drpatch.util.ContainsComparator;
 import org.mcmodule.drpatch.util.EnumOS;
 import org.mcmodule.drpatch.util.EnumPatchType;
+import org.mcmodule.drpatch.util.NaturalOrderComparator;
 
 import java.awt.BorderLayout;
 import java.awt.Component;
@@ -31,8 +33,6 @@ import java.awt.Dimension;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
 import java.awt.datatransfer.DataFlavor;
 import java.awt.datatransfer.Transferable;
 import java.io.File;
@@ -47,13 +47,15 @@ import java.nio.file.StandardWatchEventKinds;
 import java.nio.file.WatchEvent;
 import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
-import java.util.LinkedHashSet;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 public class PatchInstallerUI extends JFrame {
+    public static final Comparator<String> VERSION_COMPARATOR = Comparator.nullsLast(new ContainsComparator(EnumOS.detect().name()).thenComparing(new ContainsComparator("demo").reversed()).thenComparing(new NaturalOrderComparator().reversed()));
     private final PatchDownloadSource[] downloadSources = { new GitHubReleaseClient() };
     private final Path workingDirectory = Paths.get(System.getProperty("user.dir"));
     private final JComboBox<String> patchComboBox = new JComboBox<>();
@@ -70,29 +72,33 @@ public class PatchInstallerUI extends JFrame {
 
     public PatchInstallerUI() {
         super("补丁安装器");
-        initLookAndFeel();
         initComponents();
-        refreshPatchFiles();
-        startPatchFileWatcher();
     }
 
-    private static void initLookAndFeel() {
-        try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-        } catch (Exception ignored) {
-        }
+    @Override
+    public void addNotify() {
+        super.addNotify();
+        refreshPatchFiles();
+        startPatchFileWatcher();
+        
+    }
+    
+    @Override
+    public void removeNotify() {
+        super.removeNotify();
+        stopPatchFileWatcher();
     }
 
     private void initComponents() {
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        setMinimumSize(new Dimension(680, 360));
+        setMinimumSize(new Dimension(640, 360));
         setLocationRelativeTo(null);
 
         patchComboBox.setEditable(true);
         logTextArea.setEditable(false);
         logTextArea.setLineWrap(true);
         logTextArea.setWrapStyleWord(true);
-        progressBar.setStringPainted(true);
+        // progressBar.setStringPainted(true);
 
         JButton patchBrowseButton = new JButton("浏览");
         JButton gameBrowseButton = new JButton("浏览");
@@ -163,13 +169,6 @@ public class PatchInstallerUI extends JFrame {
         add(bottomPanel, BorderLayout.SOUTH);
 
         installDragAndDropSupport();
-
-        addWindowListener(new WindowAdapter() {
-            @Override
-            public void windowClosed(WindowEvent e) {
-                stopPatchFileWatcher();
-            }
-        });
 
         pack();
     }
@@ -515,6 +514,7 @@ public class PatchInstallerUI extends JFrame {
                         throw new IOException("不支持的补丁文件格式");
                     }
                     for (int i = 0; i < types.length; i++) {
+                        setProgress(i * 100 / types.length);
                         EnumPatchType type = types[i];
                         publish("正在安装: " + type);
                         try {
@@ -527,13 +527,16 @@ public class PatchInstallerUI extends JFrame {
                         } catch (Exception e) {
                             failureCount++;
                             publish("安装失败: " + type + " - " + e.getMessage());
-                            if (!askContinueAfterInstallFailure(type, e)) {
+                            int result = askContinueAfterInstallFailure(type, e);
+                            if (result == JOptionPane.NO_OPTION) {
                                 publish("用户选择停止安装，正在恢复之前的备份");
                                 restoreInstalledBackups(patcher, os, types, i, true, message -> publish(message));
                                 throw new IOException("安装已停止，已尝试恢复备份", e);
+                            } else if (result == JOptionPane.CANCEL_OPTION) {
+                                publish("用户选择取消安装");
+                                throw new IOException("安装已取消", e);
                             }
                         }
-                        setProgress((i + 1) * 100 / types.length);
                     }
                 }
                 if (failureCount > 0) {
@@ -580,16 +583,15 @@ public class PatchInstallerUI extends JFrame {
         worker.execute();
     }
 
-    private boolean askContinueAfterInstallFailure(EnumPatchType type, Exception exception) throws Exception {
-        final boolean[] continueInstall = new boolean[1];
+    private int askContinueAfterInstallFailure(EnumPatchType type, Exception exception) throws Exception {
+        final int[] result = new int[1];
         SwingUtilities.invokeAndWait(() -> {
             String detail = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
-            int result = JOptionPane.showConfirmDialog(this,
-                    "安装 " + type + " 失败：\n" + detail + "\n\n是否继续安装剩余内容？\n选择“否”将停止安装并恢复之前的备份。",
-                    "安装失败", JOptionPane.YES_NO_OPTION, JOptionPane.ERROR_MESSAGE);
-            continueInstall[0] = result == JOptionPane.YES_OPTION;
+            result[0] = JOptionPane.showConfirmDialog(this,
+                    "安装 " + type + " 失败：\n" + detail + "\n\n是否继续安装剩余内容？\n选择“是”将继续安装。\n选择“否”将停止安装并恢复之前的备份。\n选择“取消”将停止安装但不恢复之前的备份。",
+                    "安装失败", JOptionPane.YES_NO_CANCEL_OPTION, JOptionPane.ERROR_MESSAGE);
         });
-        return continueInstall[0];
+        return result[0];
     }
 
     private void restoreInstalledBackups(DeltarunePatcher patcher, EnumOS os, EnumPatchType[] types, int lastIndex, boolean includeLast,
@@ -604,6 +606,7 @@ public class PatchInstallerUI extends JFrame {
                 logger.accept("跳过恢复: " + type);
             }
         }
+        removeEmptyFolders(patcher.getBackDir());
     }
 
     private void runRestoreTask(File gameDirectory) {
@@ -625,6 +628,7 @@ public class PatchInstallerUI extends JFrame {
                 int restoredCount = 0;
                 int failureCount = 0;
                 for (int i = 0; i < types.length; i++) {
+                    setProgress(i * 100 / types.length);
                     EnumPatchType type = types[i];
                     publish("正在恢复: " + type);
                     try {
@@ -638,7 +642,6 @@ public class PatchInstallerUI extends JFrame {
                         failureCount++;
                         publish("恢复失败: " + type + " - " + e.getMessage());
                     }
-                    setProgress((i + 1) * 100 / types.length);
                 }
                 if (failureCount > 0) {
                     throw new IOException("部分备份恢复失败，请查看日志");
@@ -646,6 +649,7 @@ public class PatchInstallerUI extends JFrame {
                 if (restoredCount == 0) {
                     throw new IOException("未找到可恢复的备份");
                 }
+                removeEmptyFolders(patcher.getBackDir());
                 return null;
             }
 
@@ -701,6 +705,21 @@ public class PatchInstallerUI extends JFrame {
         logTextArea.append(message + System.lineSeparator());
         logTextArea.setCaretPosition(logTextArea.getDocument().getLength());
     }
+    
+    private void removeEmptyFolders(File dir) {
+        if (dir.isDirectory()) {
+            File[] files = dir.listFiles();
+            if (files.length > 0) {
+                for (File file : files) {
+                    removeEmptyFolders(file);
+                }
+                files = dir.listFiles();
+            }
+            if (files.length <= 0) {
+                dir.delete();
+            }
+        }
+    }
 
     private void refreshPatchFiles() {
         SwingUtilities.invokeLater(() -> {
@@ -730,7 +749,7 @@ public class PatchInstallerUI extends JFrame {
     }
 
     private Set<String> findPatchFiles() {
-        Set<String> patches = new LinkedHashSet<>();
+        Set<String> patches = new TreeSet<>(VERSION_COMPARATOR);
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(workingDirectory, "patch_*.7z")) {
             for (Path path : stream) {
                 if (Files.isRegularFile(path)) {
@@ -812,15 +831,20 @@ public class PatchInstallerUI extends JFrame {
             }
         }
     }
+    
+    private static void initLookAndFeel() {
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (Exception ignored) {
+        }
+    }
 
     public static void main(String[] args) {
         if (System.getProperty("java.home") == null) { // Fix graalvm
             System.setProperty("java.home", ".");
         }
+        initLookAndFeel();
         SwingUtilities.invokeLater(() -> new PatchInstallerUI().setVisible(true));
     }
 
-    static {
-        initLookAndFeel();
-    }
 }

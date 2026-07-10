@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 interface PatchDownloadSource {
@@ -47,7 +48,9 @@ interface PatchDownloadSource {
             this.name = name;
             this.version = version;
             this.publishedAt = publishedAt;
-            this.assets = Collections.unmodifiableList(new ArrayList<>(assets));
+            ArrayList<Asset> list = new ArrayList<>(assets);
+            list.sort(Comparator.nullsLast(Comparator.comparing(Asset::name, PatchInstallerUI.VERSION_COMPARATOR)));
+            this.assets = Collections.unmodifiableList(list);
         }
 
         String name() {
